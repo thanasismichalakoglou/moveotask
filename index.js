@@ -28,7 +28,7 @@ function getJson(url) {
   });
 }
 
-app.get("/webhook/joke", async (req, res) => {
+app.post("/webhook/joke", async (req, res) => {
   try {
     const jokeApiUrl =
       "https://v2.jokeapi.dev/joke/Any?type=single&safe-mode&blacklistFlags=nsfw,religious,political,racist,sexist,explicit";
