@@ -1,0 +1,49 @@
+const https = require("https");
+
+function getJson(url) {
+  return new Promise((resolve, reject) => {
+    https.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (MoveoWebhook; +https://vercel.app)",
+          "Accept": "application/json",
+        },
+      },
+      (res) => {
+        let raw = "";
+        res.on("data", (c) => (raw += c));
+        res.on("end", () => {
+          try { resolve(JSON.parse(raw)); }
+          catch { reject(new Error("Invalid JSON from JokeAPI")); }
+        });
+      }
+    ).on("error", reject);
+  });
+}
+
+module.exports = async (req, res) => {
+  try {
+    const url =
+      "https://v2.jokeapi.dev/joke/Any?type=single&safe-mode&blacklistFlags=nsfw,religious,political,racist,sexist,explicit";
+
+    const j = await getJson(url);
+    const jokeText = j?.joke || "No joke found — try again!";
+
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({
+      responses: [
+        { type: "text", texts: [jokeText] }
+      ]
+    }));
+  } catch (e) {
+    res.statusCode = 200; // στέλνουμε πάλι Moveo-format reply
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({
+      responses: [
+        { type: "text", texts: ["Sorry — I couldn't fetch a joke right now. Try again."] }
+      ]
+    }));
+  }
+};
