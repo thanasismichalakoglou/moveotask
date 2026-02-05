@@ -25,13 +25,13 @@ function mapToLangCode(s) {
   return t;
 }
 
+// ✅ Moveo test payload uses: { input: { text: "Hi" }, context: {...} }
 function extractUserText(req) {
   const b = req.body || {};
-  // πολλά πιθανά payload shapes
   const v =
+    b.input?.text ?? // ✅ το βασικό για Moveo
     b.text ??
     b.message ??
-    b.input ??
     b.query ??
     b.user_message ??
     b.userMessage ??
@@ -77,8 +77,8 @@ function getJson(url) {
 
 async function handleJoke(req, res) {
   try {
-    // 1) δοκίμασε να πάρεις lang από γνωστά fields
-    // 2) αν δεν έρθει, πάρε το από το τελευταίο user text (απάντηση στο Question)
+    // 1) αν έχεις περάσει lang κάπως στο context/fields, το πιάνουμε
+    // 2) αλλιώς παίρνουμε τη γλώσσα από το τελευταίο user input (Question answer)
     const userText = extractUserText(req);
 
     const langRaw =
@@ -101,6 +101,7 @@ async function handleJoke(req, res) {
     const joke = await getJson(jokeApiUrl);
 
     if (joke?.error) {
+      // graceful fallback
       return res.json({
         context: {
           lang_used: "en",
@@ -136,10 +137,10 @@ async function handleJoke(req, res) {
   }
 }
 
-// Moveo στέλνει POST
+// Moveo κάνει POST
 app.post("/webhook/joke", handleJoke);
 
-// Browser test (προαιρετικά)
+// Προαιρετικό browser test
 app.get("/webhook/joke", handleJoke);
 
 app.get("/", (req, res) => res.send("OK"));
