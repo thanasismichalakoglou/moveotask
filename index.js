@@ -11,7 +11,7 @@ const JOKE_LANGS = new Set(["cs", "de", "en", "es", "fr", "pt"]);
 function normalizeLang(input) {
   const s = (input || "").toString().trim().toLowerCase();
   const base = s.split("-")[0].split("_")[0]; // de-DE -> de
-  return JOKE_LANGS.has(base) ? base : "en";
+  return JOKE_LANGS.has(base) ? base : null;
 }
 
 function mapToLangCode(s) {
@@ -25,26 +25,9 @@ function mapToLangCode(s) {
   return t;
 }
 
-// ✅ Moveo test payload uses: { input: { text: "Hi" }, context: {...} }
-function extractUserText(req) {
-  const b = req.body || {};
-  const v =
-    b.input?.text ?? // ✅ το βασικό για Moveo
-    b.text ??
-    b.message ??
-    b.query ??
-    b.user_message ??
-    b.userMessage ??
-    b.payload?.text ??
-    b.payload?.message ??
-    b.request?.text ??
-    b.request?.message ??
-    b.event?.text ??
-    b.event?.message ??
-    b.context?.text ??
-    b.context?.message ??
-    "";
-  return (v || "").toString();
+// Moveo payload (σύμφωνα με το docs σου): { input: { text: "..." }, context: {...} }
+function getInputText(req) {
+  return (req.body?.input?.text || "").toString().trim();
 }
 
 function getJson(url) {
@@ -75,74 +58,96 @@ function getJson(url) {
   });
 }
 
-async function handleJoke(req, res) {
-  try {
-    // 1) αν έχεις περάσει lang κάπως στο context/fields, το πιάνουμε
-    // 2) αλλιώς παίρνουμε τη γλώσσα από το τελευταίο user input (Question answer)
-    const userText = extractUserText(req);
-
-    const langRaw =
-      req.query?.lang ??
-      req.body?.lang ??
-      req.body?.context?.lang ??
-      req.body?.context?.language ??
-      req.body?.context?.user?.language ??
-      userText;
-
-    const lang = normalizeLang(mapToLangCode(langRaw));
-
-    const jokeApiUrl =
-      `https://v2.jokeapi.dev/joke/Any` +
-      `?type=single` +
-      `&safe-mode` +
-      `&blacklistFlags=nsfw,religious,political,racist,sexist,explicit` +
-      `&lang=${encodeURIComponent(lang)}`;
-
-    const joke = await getJson(jokeApiUrl);
-
-    if (joke?.error) {
-      // graceful fallback
-      return res.json({
-        context: {
-          lang_used: "en",
-          lang_raw: String(langRaw || ""),
-          user_text: userText.slice(0, 80),
-        },
-        responses: [
-          {
-            type: "text",
-            texts: [
-              "Sorry — I couldn't fetch a joke in that language right now. Here's one in English:",
-            ],
-          },
+function languagePrompt(extraText = null) {
+  return {
+    context: { awaiting_lang: true },
+    responses: [
+      {
+        type: "text",
+        texts: [
+          extraText ||
+            "Which language do you want the joke in? (en, de, es, fr, pt, cs)"
         ],
-      });
-    }
-
-    const jokeText = joke?.joke || "No joke found — try again!";
-
-    return res.json({
-      context: {
-        lang_used: lang,
-        lang_raw: String(langRaw || ""),
-        user_text: userText.slice(0, 80),
+        options: [
+          { label: "English", text: "en" },
+          { label: "Deutsch", text: "de" },
+          { label: "Español", text: "es" },
+          { label: "Français", text: "fr" },
+          { label: "Português", text: "pt" },
+          { label: "Čeština", text: "cs" },
+        ],
       },
-      responses: [{ type: "text", texts: [jokeText] }],
-    });
-  } catch (e) {
-    return res.json({
-      context: { error: String(e?.message || e) },
-      responses: [{ type: "text", texts: ["Sorry — couldn't fetch a joke. Try again."] }],
-    });
-  }
+    ],
+  };
 }
 
-// Moveo κάνει POST
-app.post("/webhook/joke", handleJoke);
+async function jokeReply(lang) {
+  const jokeApiUrl =
+    `https://v2.jokeapi.dev/joke/Any` +
+    `?type=single` +
+    `&safe-mode` +
+    `&blacklistFlags=nsfw,religious,political,racist,sexist,explicit` +
+    `&lang=${encodeURIComponent(lang)}`;
 
-// Προαιρετικό browser test
-app.get("/webhook/joke", handleJoke);
+  const joke = await getJson(jokeApiUrl);
 
+  if (joke?.error) {
+    // αν δεν βρει safe joke στη γλώσσα κλπ → fallback
+    return {
+      context: { awaiting_lang: false, lang_used: "en" },
+      responses: [
+        {
+          type: "text",
+          texts: [
+            "Sorry — I couldn't fetch a joke in that language right now. Here's one in English:"
+          ],
+        },
+      ],
+    };
+  }
+
+  return {
+    context: { awaiting_lang: false, lang_used: lang },
+    responses: [{ type: "text", texts: [joke.joke || "No joke found — try again!"] }],
+  };
+}
+
+app.post("/webhook/joke", async (req, res) => {
+  try {
+    const inputText = getInputText(req);
+    const ctx = req.body?.context || {};
+    const awaiting = !!ctx.awaiting_lang;
+
+    // 1) Αν ΔΕΝ περιμένουμε γλώσσα → ρώτα γλώσσα (πάντα)
+    //    (Αυτό κάνει το flow ανεξάρτητο από Question node)
+    if (!awaiting) {
+      return res.json(languagePrompt());
+    }
+
+    // 2) Αν περιμένουμε γλώσσα → διάβασε την απάντηση του χρήστη
+    const guessed = mapToLangCode(inputText);
+    const lang = normalizeLang(guessed);
+
+    if (!lang) {
+      return res.json(
+        languagePrompt(
+          `I didn't understand "${inputText}". Please choose one of: en, de, es, fr, pt, cs.`
+        )
+      );
+    }
+
+    // 3) Φέρε joke στη σωστή γλώσσα
+    const reply = await jokeReply(lang);
+    return res.json(reply);
+  } catch (e) {
+    return res.json({
+      context: { awaiting_lang: false, error: String(e?.message || e) },
+      responses: [{ type: "text", texts: ["Sorry — server error. Please try again."] }],
+    });
+  }
+});
+
+// (προαιρετικό) health check
 app.get("/", (req, res) => res.send("OK"));
 
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
